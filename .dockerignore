@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+**/out/
+**/.vs/
+**/.idea/
+**/.git/
+**/TestResults/
+**/node_modules/
+**/*.user
+**/*.log
+docker/
+.github/
+tools/
+tests/
+README.md

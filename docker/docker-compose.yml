@@ -1,0 +1,32 @@
+services:
+  oracle-db:
+    image: container-registry.oracle.com/database/free:23.26.1.0-lite
+    environment:
+      ORACLE_PWD: DevPassword123
+    ports:
+      - "1521:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ./oracle/startup:/opt/oracle/scripts/startup
+    healthcheck:
+      test: ["CMD", "/opt/oracle/checkDBStatus.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  member-api:
+    build:
+      context: ../
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "8197:8080"
+    environment:
+      ConnectionStrings__OracleDb: "User Id=MEMBER_APP;Password=MemberAppPass1;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oracle-db)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=freepdb1)))"
+      ASPNETCORE_ENVIRONMENT: Development
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+
+volumes:
+  oracle-data:

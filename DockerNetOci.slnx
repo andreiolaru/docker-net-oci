@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DockerNetOci.Api/DockerNetOci.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DockerNetOci.IntegrationTests/DockerNetOci.IntegrationTests.csproj" />
+    <Project Path="tests/DockerNetOci.UnitTests/DockerNetOci.UnitTests.csproj" />
+  </Folder>
+</Solution>

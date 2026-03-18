@@ -1,0 +1,230 @@
+# DockerNetOci
+
+A CI-ready .NET 8 Web API template backed by Oracle Database with Entity Framework Core 8. Designed for organizations that use Liquibase for database migrations and need schema drift validation via EF Core.
+
+## Project Structure
+
+```
+docker-net-oci/
+├── src/
+│   └── DockerNetOci.Api/              # .NET 8 Minimal API
+│       ├── Domain/                    # Entity POCOs
+│       ├── Data/                      # DbContext + IEntityTypeConfiguration
+│       ├── Services/                  # Business logic (IMemberService)
+│       └── Endpoints/                 # Minimal API endpoint mappings
+├── tests/
+│   ├── DockerNetOci.UnitTests/        # xUnit + NSubstitute + InMemory DB
+│   └── DockerNetOci.IntegrationTests/ # xUnit + Testcontainers/docker-compose
+├── docker/
+│   ├── api.Dockerfile                 # Multi-stage build
+│   ├── docker-compose.yml             # Local dev: Oracle + API
+│   ├── docker-compose.ci.yml          # CI/testing: Oracle only
+│   └── oracle/startup/               # Init scripts (user creation)
+├── tools/
+│   └── schema-validation/             # EF Core schema drift detection
+├── .github/workflows/ci-oracle.yml           # GitHub Actions pipeline
+├── Directory.Build.props              # Shared build settings (net8.0)
+└── Directory.Packages.props           # Central Package Management
+```
+
+## Prerequisites
+
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (or newer — the project targets `net8.0`)
+- [Docker](https://www.docker.com/) (Docker Desktop on Windows, Colima on macOS)
+- Oracle Container Registry account — [sign up](https://container-registry.oracle.com), then accept the license for **Database > free**
+
+### One-time Docker login
+
+```bash
+docker login container-registry.oracle.com
+```
+
+## Quick Start
+
+### Run the full stack locally
+
+```bash
+cd docker
+docker-compose up --build
+```
+
+This starts:
+- **Oracle Database Free 23ai** on `localhost:1521` (service: `freepdb1`)
+- **Member API** on `localhost:8197`
+
+Verify:
+
+```bash
+curl http://localhost:8197/health
+curl -X POST http://localhost:8197/api/members \
+  -H "Content-Type: application/json" \
+  -d '{"source":"test","customField1":"a","customField2":"b"}'
+curl http://localhost:8197/api/members
+```
+
+### Run Oracle only (for development/testing)
+
+```bash
+cd docker
+docker-compose -f docker-compose.ci.yml up -d
+```
+
+Then run the API locally with `dotnet run --project src/DockerNetOci.Api`.
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check (includes Oracle connectivity) |
+| `GET` | `/api/members` | List all members |
+| `GET` | `/api/members/{id}` | Get member by ID |
+| `POST` | `/api/members` | Create a member |
+
+### Member entity
+
+| Field | Type | Constraint |
+|-------|------|------------|
+| `memberId` | `int` | PK, Oracle Identity (auto-generated) |
+| `source` | `string` | Required, VARCHAR2(100) |
+| `customField1` | `string?` | Nullable, VARCHAR2(100) |
+| `customField2` | `string?` | Nullable, VARCHAR2(100) |
+
+## Testing
+
+### Run all tests
+
+```bash
+dotnet test
+```
+
+This runs **5 unit tests** + **4 integration tests**. Integration tests auto-detect a running Oracle on `localhost:1521`.
+
+### Unit tests only (no Docker needed)
+
+```bash
+dotnet test tests/DockerNetOci.UnitTests
+```
+
+### Integration tests
+
+The integration test fixture (`OracleContainerFixture`) supports three modes, checked in order:
+
+| Mode | When | What happens |
+|------|------|--------------|
+| **Explicit** | `INTEGRATION_TEST_ORACLE_CONNECTION` env var is set | Uses the provided connection string directly |
+| **Auto-detect** | Oracle is listening on `localhost:1521` (dev only, skipped in CI) | Connects with default credentials |
+| **Testcontainers** | No Oracle detected | Pulls and starts a fresh Oracle container automatically |
+
+#### Typical dev workflow (fastest)
+
+```bash
+# Start Oracle once
+cd docker && docker-compose -f docker-compose.ci.yml up -d && cd ..
+
+# Run integration tests (auto-detects Oracle on port 1521)
+dotnet test tests/DockerNetOci.IntegrationTests
+```
+
+#### Clean-image testing (fresh Oracle container)
+
+```bash
+dotnet test tests/DockerNetOci.IntegrationTests \
+  -- RunConfiguration.EnvironmentVariables.FORCE_TESTCONTAINERS=true
+```
+
+PowerShell:
+```powershell
+dotnet test tests/DockerNetOci.IntegrationTests `
+  -- RunConfiguration.EnvironmentVariables.FORCE_TESTCONTAINERS=true
+```
+
+This spins up a disposable Oracle container via Testcontainers, runs the tests, and tears it down.
+
+#### Explicit connection string
+
+```powershell
+$env:INTEGRATION_TEST_ORACLE_CONNECTION="User Id=MEMBER_APP;Password=MemberAppPass1;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=freepdb1)))"
+dotnet test tests/DockerNetOci.IntegrationTests
+```
+
+## Migration Workflow
+
+This project does **not** use EF Core migrations for deployment. The `Migrations/` folder is gitignored. The workflow is:
+
+### 1. Generate reference SQL (developer, local)
+
+```bash
+# Against a running local Oracle container:
+dotnet ef migrations add GenerateSchema --project src/DockerNetOci.Api
+dotnet ef migrations script --idempotent --output reference.sql --project src/DockerNetOci.Api
+dotnet ef migrations remove --project src/DockerNetOci.Api
+```
+
+Adapt `reference.sql` into Liquibase changesets and commit to the Liquibase project.
+
+### 2. Validate schema after Liquibase deployment
+
+After Liquibase deploys to QA (or any target environment):
+
+```bash
+# Point EF tools at the target Oracle instance:
+export ConnectionStrings__OracleDb="User Id=...;Password=...;Data Source=..."
+
+# Generate a validation migration — should be empty if no drift:
+dotnet ef migrations add SchemaValidation --project src/DockerNetOci.Api --no-build
+
+# Inspect the generated file — empty Up() = no drift
+# Then clean up:
+dotnet ef migrations remove --project src/DockerNetOci.Api
+```
+
+Or use the automated script:
+
+```bash
+export ConnectionStrings__OracleDb="User Id=...;Password=...;Data Source=..."
+bash tools/schema-validation/validate-schema.sh
+```
+
+### Schema source of truth
+
+The `IEntityTypeConfiguration<Member>` in `Data/Configurations/MemberConfiguration.cs` is the canonical schema definition. It uses explicit `HasColumnType("VARCHAR2(100)")` to match what Liquibase deploys (Oracle's EF provider defaults to `NVARCHAR2`).
+
+## CI Pipeline
+
+GitHub Actions (`.github/workflows/ci-oracle.yml`) runs two jobs:
+
+1. **build-and-unit-test** — restore, build, run unit tests
+2. **integration-test** — runs integration tests with Testcontainers using the organization's Oracle image
+
+The Oracle image used by Testcontainers in CI is configurable via the `TESTCONTAINERS_ORACLE_IMAGE` environment variable. Set it in the workflow to point to your organization's internal registry:
+
+```yaml
+env:
+  TESTCONTAINERS_ORACLE_IMAGE: your-registry.example.com/oracle-free:23
+```
+
+If not set, it defaults to `container-registry.oracle.com/database/free:23.26.1.0-lite`.
+
+## Oracle Image Notes
+
+This project uses `container-registry.oracle.com/database/free:23.26.1.0-lite`.
+
+Key quirks of the `-lite` image:
+- **No `USERS` tablespace** — the init script uses `SYSAUX` instead
+- **Case-sensitive service names** — connection strings must use lowercase `freepdb1`, not `FREEPDB1`
+- **Startup scripts run in the CDB context** — must `ALTER SESSION SET CONTAINER = FREEPDB1` before creating PDB users
+- **TNS descriptor format required** — use the full `(DESCRIPTION=(...))` format, not the `host:port/service` shorthand
+
+## Configuration
+
+Connection string hierarchy (highest wins):
+
+1. Environment variable: `ConnectionStrings__OracleDb`
+2. `appsettings.Development.json`
+3. `appsettings.json`
+
+## Build Infrastructure
+
+- **`Directory.Build.props`** — shared settings: `net8.0`, nullable enabled, warnings as errors
+- **`Directory.Packages.props`** — Central Package Management, all NuGet versions pinned in one place
+- **`docker/api.Dockerfile`** — multi-stage build: `sdk:8.0` (build) + `aspnet:8.0` (runtime)

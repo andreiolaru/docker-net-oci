@@ -52,3 +52,14 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# EF Core Migrations (ephemeral, never checked in - see schema validation workflow)
+**/Migrations/
+
+# IDE
+.idea/
+.vs/
+*.user
+
+# Docker
+docker/oracle-data/
